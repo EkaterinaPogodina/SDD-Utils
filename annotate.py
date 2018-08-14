@@ -2,7 +2,7 @@ import os
 import subprocess
 import numpy as np
 import random
-import cPickle
+import pickle
 import cv2
 import math
 import xml.etree.cElementTree as ET
@@ -51,7 +51,7 @@ def log(message, level='info'):
         'GREEN': '\033[92m',
         'END': '\033[0m',
     }
-    print ('{GREEN}<'+level+'>{END}\t' + message).format(**formatters)
+    print(('{GREEN}<'+level+'>{END}\t' + message).format(**formatters))
 
 
 def write_to_file(filename, content):
@@ -81,16 +81,15 @@ def split_dataset(number_of_frames, split_ratio, file_name_prefix):
 
 
 def annotate_frames(sdd_annotation_file, dest_path, filename_prefix, number_of_frames):
-
     # Pickle the actual SDD annotation
     pickle_file = os.path.join(destination_path, 'pickle_store', filename_prefix + 'annotation.pkl')
     if os.path.exists(pickle_file):
         with open(pickle_file, 'rb') as fid:
-            sdd_annotation = cPickle.load(fid)
+            sdd_annotation = pickle.load(fid)
     else:
         sdd_annotation = np.genfromtxt(sdd_annotation_file, delimiter=' ', dtype=np.str)
         with open(pickle_file, 'wb') as fid:
-            cPickle.dump(sdd_annotation, fid)
+            pickle.dump(sdd_annotation, fid)
 
     # Create VOC style annotation.
     first_image_path = os.path.join(destination_path, 'JPEGImages', filename_prefix+'1.jpg')
@@ -113,16 +112,17 @@ def annotate_frames(sdd_annotation_file, dest_path, filename_prefix, number_of_f
         annotations_in_frame = sdd_annotation[sdd_annotation[:, 5] == str(frame_number)]
 
         for annotation_data in annotations_in_frame:
-            object = ET.SubElement(annotation, "object")
-            ET.SubElement(object, "name").text = annotation_data[9].replace('"','')
-            ET.SubElement(object, "pose").text = 'Unspecified'
-            ET.SubElement(object, "truncated").text = annotation_data[7] # occluded
-            ET.SubElement(object, "difficult").text = '0'
-            bndbox = ET.SubElement(object, "bndbox")
-            ET.SubElement(bndbox, "xmin").text = annotation_data[1]
-            ET.SubElement(bndbox, "ymin").text = annotation_data[2]
-            ET.SubElement(bndbox, "xmax").text = annotation_data[3]
-            ET.SubElement(bndbox, "ymax").text = annotation_data[4]
+            if int(annotation_data[6]) == 0 and int(annotation_data[7]) == 0:
+                object = ET.SubElement(annotation, "object")
+                ET.SubElement(object, "name").text = annotation_data[9].replace('"','')
+                ET.SubElement(object, "pose").text = 'Unspecified'
+                ET.SubElement(object, "truncated").text = annotation_data[7] # occluded
+                ET.SubElement(object, "difficult").text = '0'
+                bndbox = ET.SubElement(object, "bndbox")
+                ET.SubElement(bndbox, "xmin").text = annotation_data[1]
+                ET.SubElement(bndbox, "ymin").text = annotation_data[2]
+                ET.SubElement(bndbox, "xmax").text = annotation_data[3]
+                ET.SubElement(bndbox, "ymax").text = annotation_data[4]
 
         xml_annotation = ET.ElementTree(annotation)
         xml_annotation.write(os.path.join(dest_path, filename_prefix + str(frame_number) + ".xml"))
@@ -174,11 +174,12 @@ def split_dataset_uniformly(number_of_frames, split_ratio, share, file_name_pref
             write_to_file(os.path.join(destination_path, 'ImageSets', 'Main', 'test.txt'), file_name_prefix + str(index))
 
 
-def split_and_annotate(num_training_images=None, num_val_images=None, num_testing_images=None):
+def split_and_annotate(num_training_images=None, num_val_images=None):
     assert_path(dataset_path, ''.join(e for e in dataset_path if e.isalnum()) + ' folder should be found in the cwd of this script.')
     init_directories()
     if num_training_images is not None and num_val_images is not None and num_testing_images is not None:
         share = calculate_share(num_training_images, num_val_images, num_testing_images)
+
     for scene in videos_to_be_processed:
         path = os.path.join(dataset_path, 'videos', scene)
         assert_path(path, path + ' not found.')
@@ -214,58 +215,111 @@ def split_and_annotate(num_training_images=None, num_val_images=None, num_testin
 
                 else:
                     log(video_file + ' is already split into frames. Skipping...')
+                    log('Annotating frames from ' + video_file)
+                    sdd_annotation_file = os.path.join(dataset_path, 'annotations', scene,
+                                                       'video' + str(video_index), 'annotations.txt')
+                    assert_path(sdd_annotation_file, 'Annotation file not found. '
+                                                     'Trying to access ' + sdd_annotation_file)
+                    dest_path = os.path.join(destination_path, 'Annotations')
+                    number_of_frames = count_files(jpeg_image_path, image_name_prefix)
+                    annotate_frames(sdd_annotation_file, dest_path, image_name_prefix, number_of_frames)
+                    log('Annotation Complete.')
 
                 # Create train-val-test split
                 number_of_frames = count_files(jpeg_image_path, image_name_prefix)
                 split_ratio = videos.get(video_index)
-                if num_training_images is not None and num_val_images is not None and num_testing_images is not None:
-                    split_dataset_uniformly(number_of_frames, split_ratio, share, image_name_prefix)
-                else:
-                    split_dataset(number_of_frames, split_ratio, image_name_prefix)
+                try:
+                    if num_training_images is not None and num_val_images is not None and num_testing_images is not None:
+                        split_dataset_uniformly(number_of_frames, split_ratio, share, image_name_prefix)
+                    else:
+                        split_dataset(number_of_frames, split_ratio, image_name_prefix)
+                except:
+                    pass
                 log('Successfully created train-val-test split.')
     log('Done.')
 
 
 if __name__ == '__main__':
 
-    # --------------------------------------------------------
-    # videos_to_be_processed is a dictionary.
-    # Keys in this dictionary should match the 'scenes' in Stanford Drone Dataset.
-    # Value for each key is also a dictionary.
-    #   - The number of items in the dictionary, can atmost be the number of videos each 'scene'
-    #   - Each item in the dictionary is of the form {video_number:fraction_of_images_to_be_split_into_train_val_test_set}
-    #   - eg: {2:(.7, .2, .1)} means 0.7 fraction of the images from Video2, should be put into training set,
-    #                                0.2 fraction to validation set and
-    #                                0.1 fraction to test set.
-    #                                Also, training and validation images are merged into trainVal set.
-    # --------------------------------------------------------
-
-    # videos_to_be_processed = {'bookstore': {0: (.5, .2, .3)},
-    #                           'coupa': {0: (.5, .2, .3)},
-    #                           'deathCircle': {0: (.5, .2, .3)},
-    #                           'gates': {0: (.5, .2, .3)},
-    #                           'hyang': {0: (.5, .2, .3)},
-    #                           'little': {0: (.5, .2, .3)},
-    #                           'nexus': {0: (.5, .2, .3)},
-    #                           'quad': {0: (.5, .2, .3)}}
-
     # Uniform Sub Sampling : Split should contain only 0 / 1
-    videos_to_be_processed = {'bookstore': {1: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)},
-                              'coupa': {0: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)},
-                              'deathCircle': {0: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)},
-                              'gates': {0: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)},
-                              'hyang': {0: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)},
-                              'little': {0: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)},
-                              'nexus': {0: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)},
-                              'quad': {0: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1)}}
+    videos_to_be_processed = {'bookstore': {0: (1, 0, 0),
+                                            1: (1, 0, 0),
+                                            2: (1, 0, 0),
+                                            3: (1, 0, 0),
+                                            4: (1, 0, 0),
+                                            5: (0, 1, 0),
+                                            6: (0, 0, 1)},
 
-    num_training_images = 40000
+                              'coupa': {0: (1, 0, 0),
+                                        1: (1, 0, 0),
+                                        2: (1, 0, 0),
+                                        3: (0, 1, 0)},
+
+                              'deathCircle': {0: (1, 0, 0),
+                                            1: (1, 0, 0),
+                                            2: (1, 0, 0),
+                                            3: (1, 0, 0),
+                                            4: (0, 1, 0)},
+
+                              'gates': {0: (1, 0, 0),
+                                        1: (1, 0, 0),
+                                        2: (1, 0, 0),
+                                        3: (1, 0, 0),
+                                        4: (1, 0, 0),
+                                        5: (1, 0, 0),
+                                        6: (1, 0, 0),
+                                        7: (1, 0, 0),
+                                        8: (0, 1, 0)},
+
+                              'hyang': {0: (1, 0, 0),
+                                        1: (1, 0, 0),
+                                        2: (1, 0, 0),
+                                        3: (1, 0, 0),
+                                        4: (1, 0, 0),
+                                        5: (1, 0, 0),
+                                        6: (1, 0, 0),
+                                        7: (1, 0, 0),
+                                        8: (1, 0, 0),
+                                        9: (1, 0, 0),
+                                        10: (1, 0, 0),
+                                        11: (1, 0, 0),
+                                        12: (1, 0, 0),
+                                        13: (1, 0, 0),
+                                        14: (0, 1, 0)},
+
+                              'little': {0: (1, 0, 0),
+                                        1: (1, 0, 0),
+                                        2: (1, 0, 0),
+                                        3: (0, 1, 0)},
+
+                              'nexus': {0: (1, 0, 0),
+                                        1: (1, 0, 0),
+                                        2: (1, 0, 0),
+                                        3: (1, 0, 0),
+                                        4: (1, 0, 0),
+                                        5: (1, 0, 0),
+                                        6: (1, 0, 0),
+                                        7: (1, 0, 0),
+                                        8: (1, 0, 0),
+                                        9: (1, 0, 0),
+                                        10: (1, 0, 0),
+                                        11: (0, 1, 0)
+                                    },
+
+                              'quad': {
+                                  0: (1, 0, 0),
+                                  1: (1, 0, 0),
+                                  2: (1, 0, 0),
+                                  3: (0, 1, 0)
+                                }
+                              }
+
+    num_training_images = 100000
     num_val_images = 10000
-    num_testing_images = 20000
+    num_testing_images = 0
 
-    dataset_path = './StanfordDroneDataset'
-    destination_folder_name = 'sdd'
+    dataset_path = '../Downloads/stanford_campus_dataset'
+    destination_folder_name = 'STANFORDdevkit'
     destination_path = os.path.join(dataset_path, destination_folder_name)
 
-    # split_and_annotate()
-    split_and_annotate(num_training_images, num_val_images, num_testing_images)
+    split_and_annotate(num_training_images, num_val_images)
